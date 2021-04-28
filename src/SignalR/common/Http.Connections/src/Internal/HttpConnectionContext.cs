@@ -31,7 +31,8 @@ namespace Microsoft.AspNetCore.Http.Connections.Internal
                                          IHttpContextFeature,
                                          IHttpTransportFeature,
                                          IConnectionInherentKeepAliveFeature,
-                                         IConnectionLifetimeFeature
+                                         IConnectionLifetimeFeature,
+                                         IConnectionLifetimeNotificationFeature
     {
         private static long _tenSeconds = TimeSpan.FromSeconds(10).Ticks;
 
@@ -43,7 +44,9 @@ namespace Microsoft.AspNetCore.Http.Connections.Internal
         private PipeWriterStream _applicationStream;
         private IDuplexPipe _application;
         private IDictionary<object, object?>? _items;
+        private DateTimeOffset? _authorizationExpiration;
         private CancellationTokenSource _connectionClosedTokenSource;
+        private CancellationTokenSource _connectionClosingTokenSource;
 
         private CancellationTokenSource? _sendCts;
         private bool _activeSend;
@@ -87,9 +90,13 @@ namespace Microsoft.AspNetCore.Http.Connections.Internal
             Features.Set<IHttpTransportFeature>(this);
             Features.Set<IConnectionInherentKeepAliveFeature>(this);
             Features.Set<IConnectionLifetimeFeature>(this);
+            Features.Set<IConnectionLifetimeNotificationFeature>(this);
 
             _connectionClosedTokenSource = new CancellationTokenSource();
             ConnectionClosed = _connectionClosedTokenSource.Token;
+
+            _connectionClosingTokenSource = new CancellationTokenSource();
+            ConnectionClosedRequested = _connectionClosingTokenSource.Token;
         }
 
         public CancellationTokenSource? Cancellation { get; set; }
@@ -103,6 +110,15 @@ namespace Microsoft.AspNetCore.Http.Connections.Internal
 
         // Used for LongPolling because we need to create a scope that spans the lifetime of multiple requests on the cloned HttpContext
         internal IServiceScope? ServiceScope { get; set; }
+
+        internal DateTimeOffset? AuthorizationExpiration
+        {
+            get => _authorizationExpiration;
+            set
+            {
+                _authorizationExpiration = value;
+            }
+        }
 
         public Task? TransportTask { get; set; }
 
@@ -175,6 +191,8 @@ namespace Microsoft.AspNetCore.Http.Connections.Internal
         public HttpContext? HttpContext { get; set; }
 
         public override CancellationToken ConnectionClosed { get; set; }
+
+        public CancellationToken ConnectionClosedRequested { get; set; }
 
         public override void Abort()
         {
@@ -580,6 +598,12 @@ namespace Microsoft.AspNetCore.Http.Connections.Internal
             {
                 _activeSend = false;
             }
+        }
+
+        // TODO: Log here or in HttpConnectionManager
+        public void RequestClose()
+        {
+            ThreadPool.UnsafeQueueUserWorkItem(cts => ((CancellationTokenSource)cts!).Cancel(), _connectionClosingTokenSource);
         }
 
         private static class Log
